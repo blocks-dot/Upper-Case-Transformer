@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.MessageNode;
+import net.runelite.api.Player;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.CommandExecuted;
 import net.runelite.client.config.ConfigManager;
@@ -22,6 +23,8 @@ import net.runelite.client.plugins.PluginDescriptor;
 public class UpperCaseTransformerPlugin extends Plugin
 {
 	private static final long DEBUG_MESSAGE_INTERVAL_NANOS = 1_000_000_000L;
+	/** Game client ticks for overhead text (150 = 3 seconds, matches normal player chat overhead). */
+	private static final int OVERHEAD_CYCLE_TICKS = 150;
 
 	@Inject
 	private Client client;
@@ -80,6 +83,12 @@ public class UpperCaseTransformerPlugin extends Plugin
 		}
 		chatMessage.setMessage(transformed);
 		client.refreshChat();
+
+		// Only replace overhead for public chat (when the game already shows say overhead)
+		if (config.transformOverhead() && isPublicChatType(chatMessage.getType()))
+		{
+			setOverheadTextForSender(chatMessage.getName(), transformed);
+		}
 	}
 
 	@Subscribe
@@ -134,6 +143,30 @@ public class UpperCaseTransformerPlugin extends Plugin
 		return configManager.getConfig(UpperCaseTransformerConfig.class);
 	}
 
+	private void setOverheadTextForSender(String senderName, String transformedMessage)
+	{
+		if (senderName == null || transformedMessage == null)
+		{
+			return;
+		}
+
+		String plain = transformedMessage.replaceAll("<[^>]*>", "").trim();
+		if (plain.isEmpty())
+		{
+			return;
+		}
+
+		for (Player player : client.getPlayers())
+		{
+			if (senderName.equals(player.getName()))
+			{
+				player.setOverheadText(plain);
+				player.setOverheadCycle(OVERHEAD_CYCLE_TICKS);
+				break;
+			}
+		}
+	}
+
 	private boolean shouldHandleType(ChatMessageType type)
 	{
 		if (type == null)
@@ -161,6 +194,11 @@ public class UpperCaseTransformerPlugin extends Plugin
 		}
 
 		return config.transformPrivate() && typeName.contains("PRIVATECHAT");
+	}
+
+	private boolean isPublicChatType(ChatMessageType type)
+	{
+		return type != null && type == ChatMessageType.PUBLICCHAT;
 	}
 
 	private boolean isPlayerMessage(ChatMessage chatMessage)
@@ -208,17 +246,23 @@ public class UpperCaseTransformerPlugin extends Plugin
 		}
 
 		int titleCaseWords = 0;
+		int allCapsWords = 0;
 		int alphabeticWords = 0;
 
 		boolean inTag = false;
 		boolean tokenHasLetters = false;
 		boolean tokenStartsUpper = false;
 		boolean tokenRestLower = true;
+		boolean tokenAllCaps = true;
 		int tokenLetterCount = 0;
 
-		for (int i = 0; i < message.length(); i++)
+		boolean firstWordWasTitleCase = false;
+		boolean firstWordWasAllCaps = false;
+		boolean secondWordStartsLower = false;
+
+		for (int idx = 0; idx < message.length(); idx++)
 		{
-			char ch = message.charAt(i);
+			char ch = message.charAt(idx);
 			if (ch == '<')
 			{
 				inTag = true;
@@ -238,16 +282,59 @@ public class UpperCaseTransformerPlugin extends Plugin
 			{
 				if (tokenHasLetters)
 				{
-					alphabeticWords++;
-					if (tokenLetterCount > 1 && tokenStartsUpper && tokenRestLower)
+					boolean isTitleCase = tokenLetterCount > 1 && tokenStartsUpper && tokenRestLower;
+					boolean isAllCaps = tokenLetterCount >= 1 && tokenAllCaps;
+
+					if (alphabeticWords == 0)
 					{
-						titleCaseWords++;
+						firstWordWasTitleCase = isTitleCase;
+						firstWordWasAllCaps = isAllCaps;
 					}
+					else if (alphabeticWords == 1)
+					{
+						if (firstWordWasTitleCase && secondWordStartsLower)
+						{
+							// OSRS capitalizes first word by default; don't count it
+						}
+						else
+						{
+							if (firstWordWasTitleCase)
+							{
+								titleCaseWords++;
+							}
+							if (firstWordWasAllCaps)
+							{
+								allCapsWords++;
+							}
+						}
+						if (isTitleCase)
+						{
+							titleCaseWords++;
+						}
+						if (isAllCaps)
+						{
+							allCapsWords++;
+						}
+					}
+					else
+					{
+						if (isTitleCase)
+						{
+							titleCaseWords++;
+						}
+						if (isAllCaps)
+						{
+							allCapsWords++;
+						}
+					}
+
+					alphabeticWords++;
 				}
 
 				tokenHasLetters = false;
 				tokenStartsUpper = false;
 				tokenRestLower = true;
+				tokenAllCaps = true;
 				tokenLetterCount = 0;
 				continue;
 			}
@@ -262,7 +349,12 @@ public class UpperCaseTransformerPlugin extends Plugin
 				tokenHasLetters = true;
 				tokenStartsUpper = Character.isUpperCase(ch);
 				tokenRestLower = true;
+				tokenAllCaps = Character.isUpperCase(ch);
 				tokenLetterCount = 1;
+				if (alphabeticWords == 1)
+				{
+					secondWordStartsLower = Character.isLowerCase(ch);
+				}
 				continue;
 			}
 
@@ -271,26 +363,70 @@ public class UpperCaseTransformerPlugin extends Plugin
 			{
 				tokenRestLower = false;
 			}
+			if (!Character.isUpperCase(ch))
+			{
+				tokenAllCaps = false;
+			}
 		}
 
 		if (tokenHasLetters)
 		{
-			alphabeticWords++;
-			if (tokenLetterCount > 1 && tokenStartsUpper && tokenRestLower)
+			boolean isTitleCase = tokenLetterCount > 1 && tokenStartsUpper && tokenRestLower;
+			boolean isAllCaps = tokenLetterCount >= 1 && tokenAllCaps;
+
+			if (alphabeticWords == 0)
 			{
-				titleCaseWords++;
+				firstWordWasTitleCase = isTitleCase;
+				firstWordWasAllCaps = isAllCaps;
 			}
+			else if (alphabeticWords == 1)
+			{
+				if (firstWordWasTitleCase && secondWordStartsLower)
+				{
+					// skip first word
+				}
+				else
+				{
+					if (firstWordWasTitleCase)
+					{
+						titleCaseWords++;
+					}
+					if (firstWordWasAllCaps)
+					{
+						allCapsWords++;
+					}
+				}
+				if (isTitleCase)
+				{
+					titleCaseWords++;
+				}
+				if (isAllCaps)
+				{
+					allCapsWords++;
+				}
+			}
+			else
+			{
+				if (isTitleCase)
+				{
+					titleCaseWords++;
+				}
+				if (isAllCaps)
+				{
+					allCapsWords++;
+				}
+			}
+
+			alphabeticWords++;
 		}
 
-		// Support partial-uppercase intent: if at least half the words look title-cased,
-		// treat the message as likely transformed by RuneScape casing rules.
 		if (alphabeticWords < 2)
 		{
 			return false;
 		}
 
-		int requiredTitleCaseWords = Math.max(2, (alphabeticWords + 1) / 2);
-		return titleCaseWords >= requiredTitleCaseWords;
+		// Trigger if there's at least one word we'll capitalize: any title-case (after first-word rule) or all-caps
+		return (titleCaseWords + allCapsWords) >= 1;
 	}
 
 	private String upperCaseTitleCaseWordsOutsideTagsIfChanged(String input)
@@ -298,6 +434,7 @@ public class UpperCaseTransformerPlugin extends Plugin
 		StringBuilder out = new StringBuilder(input);
 		boolean inTag = false;
 		boolean changed = false;
+		int wordIndex = 0;
 		int i = 0;
 		while (i < out.length())
 		{
@@ -348,7 +485,10 @@ public class UpperCaseTransformerPlugin extends Plugin
 				i++;
 			}
 
-			if (letters > 1 && startsUpper && restLower)
+			boolean isTitleCase = letters > 1 && startsUpper && restLower;
+			boolean skipFirstWordRule = wordIndex == 0 && isTitleCase && nextWordStartsLower(out, i);
+
+			if (isTitleCase && !skipFirstWordRule)
 			{
 				for (int j = start; j < i; j++)
 				{
@@ -361,8 +501,40 @@ public class UpperCaseTransformerPlugin extends Plugin
 					}
 				}
 			}
+
+			wordIndex++;
 		}
 
 		return changed ? out.toString() : null;
+	}
+
+	/**
+	 * Returns true if the next word (after position end) starts with a lowercase letter.
+	 * Skips tags and whitespace.
+	 */
+	private boolean nextWordStartsLower(StringBuilder s, int end)
+	{
+		int idx = end;
+		while (idx < s.length())
+		{
+			char c = s.charAt(idx);
+			if (c == '<')
+			{
+				idx++;
+				while (idx < s.length() && s.charAt(idx) != '>')
+				{
+					idx++;
+				}
+				idx++;
+				continue;
+			}
+			if (Character.isWhitespace(c) || !Character.isLetter(c))
+			{
+				idx++;
+				continue;
+			}
+			return Character.isLowerCase(c);
+		}
+		return false;
 	}
 }

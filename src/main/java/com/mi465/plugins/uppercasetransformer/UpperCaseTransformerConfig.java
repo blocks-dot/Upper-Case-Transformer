@@ -36,4 +36,14 @@ public interface UpperCaseTransformerConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "transformOverhead",
+		name = "Transform overhead chat",
+		description = "Show transformed capitalization above players' heads for public chat only (when overhead is already shown)"
+	)
+	default boolean transformOverhead()
+	{
+		return true;
+	}
 }
