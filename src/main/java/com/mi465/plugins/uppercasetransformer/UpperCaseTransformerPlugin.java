@@ -7,6 +7,7 @@ import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.MessageNode;
 import net.runelite.api.Player;
+import net.runelite.api.WorldView;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.CommandExecuted;
 import net.runelite.client.config.ConfigManager;
@@ -14,6 +15,10 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 
+/**
+ * Restores intended uppercase in player chat messages that OSRS displays in title case.
+ * Supports public, clan/friends, and private chat; optional overhead replacement for public say only.
+ */
 @Slf4j
 @PluginDescriptor(
 	name = "Upper Case Transformer",
@@ -25,6 +30,10 @@ public class UpperCaseTransformerPlugin extends Plugin
 	private static final long DEBUG_MESSAGE_INTERVAL_NANOS = 1_000_000_000L;
 	/** Game client ticks for overhead text (150 = 3 seconds, matches normal player chat overhead). */
 	private static final int OVERHEAD_CYCLE_TICKS = 150;
+	private static final int MIN_WORDS_FOR_TRANSFORM = 2;
+	private static final String CHAT_TAG_PATTERN = "<[^>]*>";
+	private static final String CMD_DEBUG = "uctdebug";
+	private static final String CMD_DEBUG_ALT = "uppercasedebug";
 
 	@Inject
 	private Client client;
@@ -100,13 +109,13 @@ public class UpperCaseTransformerPlugin extends Plugin
 			return;
 		}
 
-		if (!command.equalsIgnoreCase("uctdebug") && !command.equalsIgnoreCase("uppercasedebug"))
+		if (!command.equalsIgnoreCase(CMD_DEBUG) && !command.equalsIgnoreCase(CMD_DEBUG_ALT))
 		{
 			return;
 		}
 
 		String[] args = commandExecuted.getArguments();
-		if (args.length == 0)
+		if (args == null || args.length == 0)
 		{
 			debugChatTypesEnabled = !debugChatTypesEnabled;
 		}
@@ -120,21 +129,16 @@ public class UpperCaseTransformerPlugin extends Plugin
 		}
 		else
 		{
-			client.addChatMessage(
-				ChatMessageType.GAMEMESSAGE,
-				"",
-				"[UCT] Usage: ::uctdebug [on|off]",
-				null
-			);
+			sendGameMessage("[UCT] Usage: ::" + CMD_DEBUG + " [on|off]");
 			return;
 		}
 
-		client.addChatMessage(
-			ChatMessageType.GAMEMESSAGE,
-			"",
-			"[UCT] Debug chat types " + (debugChatTypesEnabled ? "enabled" : "disabled"),
-			null
-		);
+		sendGameMessage("[UCT] Debug chat types " + (debugChatTypesEnabled ? "enabled" : "disabled"));
+	}
+
+	private void sendGameMessage(String message)
+	{
+		client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", message, null);
 	}
 
 	@Provides
@@ -150,13 +154,18 @@ public class UpperCaseTransformerPlugin extends Plugin
 			return;
 		}
 
-		String plain = transformedMessage.replaceAll("<[^>]*>", "").trim();
+		String plain = stripChatTags(transformedMessage);
 		if (plain.isEmpty())
 		{
 			return;
 		}
 
-		for (Player player : client.getPlayers())
+		WorldView worldView = client.getTopLevelWorldView();
+		if (worldView == null)
+		{
+			return;
+		}
+		for (Player player : worldView.players())
 		{
 			if (senderName.equals(player.getName()))
 			{
@@ -167,6 +176,11 @@ public class UpperCaseTransformerPlugin extends Plugin
 		}
 	}
 
+	private static String stripChatTags(String s)
+	{
+		return s == null ? "" : s.replaceAll(CHAT_TAG_PATTERN, "").trim();
+	}
+
 	private boolean shouldHandleType(ChatMessageType type)
 	{
 		if (type == null)
@@ -174,31 +188,36 @@ public class UpperCaseTransformerPlugin extends Plugin
 			return false;
 		}
 
-		String typeName = type.name();
-		if (config.transformPublic()
-			&& (typeName.equals("PUBLICCHAT")
-			|| typeName.equals("MODCHAT")
-			|| typeName.equals("AUTOTYPER")
-			|| typeName.equals("MODAUTOTYPER")))
+		if (config.transformPublic() && isPublicChatTypeOrMod(type))
 		{
 			return true;
 		}
-
-		if (config.transformClan()
-			&& (typeName.equals("CLAN_CHAT")
-			|| typeName.equals("CLAN_GUEST_CHAT")
-			|| typeName.equals("FRIENDSCHAT")
-			|| typeName.equals("CLAN_GIM_CHAT")))
+		if (config.transformClan() && isClanChatType(type))
 		{
 			return true;
 		}
-
-		return config.transformPrivate() && typeName.contains("PRIVATECHAT");
+		return config.transformPrivate() && type.name().contains("PRIVATECHAT");
 	}
 
-	private boolean isPublicChatType(ChatMessageType type)
+	private static boolean isPublicChatTypeOrMod(ChatMessageType type)
 	{
-		return type != null && type == ChatMessageType.PUBLICCHAT;
+		return type == ChatMessageType.PUBLICCHAT
+			|| type == ChatMessageType.MODCHAT
+			|| type == ChatMessageType.AUTOTYPER
+			|| type == ChatMessageType.MODAUTOTYPER;
+	}
+
+	private static boolean isClanChatType(ChatMessageType type)
+	{
+		return type == ChatMessageType.CLAN_CHAT
+			|| type == ChatMessageType.CLAN_GUEST_CHAT
+			|| type == ChatMessageType.FRIENDSCHAT
+			|| type == ChatMessageType.CLAN_GIM_CHAT;
+	}
+
+	private static boolean isPublicChatType(ChatMessageType type)
+	{
+		return type == ChatMessageType.PUBLICCHAT;
 	}
 
 	private boolean isPlayerMessage(ChatMessage chatMessage)
@@ -230,12 +249,7 @@ public class UpperCaseTransformerPlugin extends Plugin
 
 		lastDebugType = typeName;
 		lastDebugMessageNanos = now;
-		client.addChatMessage(
-			ChatMessageType.GAMEMESSAGE,
-			"",
-			"[UCT Debug] type=" + typeName + ", name=" + chatMessage.getName(),
-			null
-		);
+		sendGameMessage("[UCT Debug] type=" + typeName + ", name=" + chatMessage.getName());
 	}
 
 	private boolean looksLikeUppercaseWasTitleCased(String message)
@@ -245,8 +259,8 @@ public class UpperCaseTransformerPlugin extends Plugin
 			return false;
 		}
 
-		int titleCaseWords = 0;
-		int allCapsWords = 0;
+		int[] titleCaseWords = {0};
+		int[] allCapsWords = {0};
 		int alphabeticWords = 0;
 
 		boolean inTag = false;
@@ -284,51 +298,15 @@ public class UpperCaseTransformerPlugin extends Plugin
 				{
 					boolean isTitleCase = tokenLetterCount > 1 && tokenStartsUpper && tokenRestLower;
 					boolean isAllCaps = tokenLetterCount >= 1 && tokenAllCaps;
-
-					if (alphabeticWords == 0)
+					applyWordCounts(isTitleCase, isAllCaps, alphabeticWords,
+						firstWordWasTitleCase, firstWordWasAllCaps, secondWordStartsLower,
+						titleCaseWords, allCapsWords);
+					alphabeticWords++;
+					if (alphabeticWords == 1)
 					{
 						firstWordWasTitleCase = isTitleCase;
 						firstWordWasAllCaps = isAllCaps;
 					}
-					else if (alphabeticWords == 1)
-					{
-						if (firstWordWasTitleCase && secondWordStartsLower)
-						{
-							// OSRS capitalizes first word by default; don't count it
-						}
-						else
-						{
-							if (firstWordWasTitleCase)
-							{
-								titleCaseWords++;
-							}
-							if (firstWordWasAllCaps)
-							{
-								allCapsWords++;
-							}
-						}
-						if (isTitleCase)
-						{
-							titleCaseWords++;
-						}
-						if (isAllCaps)
-						{
-							allCapsWords++;
-						}
-					}
-					else
-					{
-						if (isTitleCase)
-						{
-							titleCaseWords++;
-						}
-						if (isAllCaps)
-						{
-							allCapsWords++;
-						}
-					}
-
-					alphabeticWords++;
 				}
 
 				tokenHasLetters = false;
@@ -373,60 +351,56 @@ public class UpperCaseTransformerPlugin extends Plugin
 		{
 			boolean isTitleCase = tokenLetterCount > 1 && tokenStartsUpper && tokenRestLower;
 			boolean isAllCaps = tokenLetterCount >= 1 && tokenAllCaps;
-
-			if (alphabeticWords == 0)
+			applyWordCounts(isTitleCase, isAllCaps, alphabeticWords,
+				firstWordWasTitleCase, firstWordWasAllCaps, secondWordStartsLower,
+				titleCaseWords, allCapsWords);
+			alphabeticWords++;
+			if (alphabeticWords == 1)
 			{
 				firstWordWasTitleCase = isTitleCase;
 				firstWordWasAllCaps = isAllCaps;
 			}
-			else if (alphabeticWords == 1)
-			{
-				if (firstWordWasTitleCase && secondWordStartsLower)
-				{
-					// skip first word
-				}
-				else
-				{
-					if (firstWordWasTitleCase)
-					{
-						titleCaseWords++;
-					}
-					if (firstWordWasAllCaps)
-					{
-						allCapsWords++;
-					}
-				}
-				if (isTitleCase)
-				{
-					titleCaseWords++;
-				}
-				if (isAllCaps)
-				{
-					allCapsWords++;
-				}
-			}
-			else
-			{
-				if (isTitleCase)
-				{
-					titleCaseWords++;
-				}
-				if (isAllCaps)
-				{
-					allCapsWords++;
-				}
-			}
-
-			alphabeticWords++;
 		}
 
-		if (alphabeticWords < 2)
+		if (alphabeticWords < MIN_WORDS_FOR_TRANSFORM)
 		{
 			return false;
 		}
 
 		// Trigger if there's at least one word we'll capitalize: any title-case (after first-word rule) or all-caps
-		return (titleCaseWords + allCapsWords) >= 1;
+		return (titleCaseWords[0] + allCapsWords[0]) >= 1;
+	}
+
+	private static void applyWordCounts(boolean isTitleCase, boolean isAllCaps, int alphabeticWordsSoFar,
+		boolean firstWordWasTitleCase, boolean firstWordWasAllCaps, boolean secondWordStartsLower,
+		int[] titleCaseWords, int[] allCapsWords)
+	{
+		if (alphabeticWordsSoFar == 0)
+		{
+			return;
+		}
+		if (alphabeticWordsSoFar == 1)
+		{
+			if (!(firstWordWasTitleCase && secondWordStartsLower))
+			{
+				if (firstWordWasTitleCase)
+				{
+					titleCaseWords[0]++;
+				}
+				if (firstWordWasAllCaps)
+				{
+					allCapsWords[0]++;
+				}
+			}
+		}
+		if (isTitleCase)
+		{
+			titleCaseWords[0]++;
+		}
+		if (isAllCaps)
+		{
+			allCapsWords[0]++;
+		}
 	}
 
 	private String upperCaseTitleCaseWordsOutsideTagsIfChanged(String input)
@@ -512,7 +486,7 @@ public class UpperCaseTransformerPlugin extends Plugin
 	 * Returns true if the next word (after position end) starts with a lowercase letter.
 	 * Skips tags and whitespace.
 	 */
-	private boolean nextWordStartsLower(StringBuilder s, int end)
+	private static boolean nextWordStartsLower(StringBuilder s, int end)
 	{
 		int idx = end;
 		while (idx < s.length())
