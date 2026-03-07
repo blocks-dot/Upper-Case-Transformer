@@ -34,7 +34,9 @@ public class UpperCaseTransformerPlugin extends Plugin
 	private static final String CHAT_TAG_PATTERN = "<[^>]*>";
 	private static final String CMD_DEBUG = "uctdebug";
 	private static final String CMD_DEBUG_ALT = "uppercasedebug";
-
+	/** Hex color for debug chat lines (cyan). */
+	private static final String DEBUG_COLOR = "00bfff";
+	/** Colored prefix for debug lines (cyan); zero-width space so [ isn't stripped. */
 	@Inject
 	private Client client;
 
@@ -68,13 +70,15 @@ public class UpperCaseTransformerPlugin extends Plugin
 		{
 			return;
 		}
+		String message = chatMessage.getMessage();
+		DetectionResult detection = looksLikeUppercaseWasTitleCased(message);
+
 		if (debugChatTypesEnabled)
 		{
-			sendDebugTypeMessage(chatMessage);
+			sendDebugDecisionMessage(chatMessage, detection);
 		}
 
-		String message = chatMessage.getMessage();
-		if (!looksLikeUppercaseWasTitleCased(message))
+		if (!detection.shouldTransform)
 		{
 			return;
 		}
@@ -133,7 +137,7 @@ public class UpperCaseTransformerPlugin extends Plugin
 			return;
 		}
 
-		sendGameMessage("[UCT] Debug chat types " + (debugChatTypesEnabled ? "enabled" : "disabled"));
+		sendGameMessage("UCT Debug - " + "<col=" + DEBUG_COLOR + ">Chat types " + (debugChatTypesEnabled ? "enabled" : "disabled") + "</col>");
 	}
 
 	private void sendGameMessage(String message)
@@ -249,14 +253,40 @@ public class UpperCaseTransformerPlugin extends Plugin
 
 		lastDebugType = typeName;
 		lastDebugMessageNanos = now;
-		sendGameMessage("[UCT Debug] type=" + typeName + ", name=" + chatMessage.getName());
+		sendGameMessage("UCT Debug - " + "<col=" + DEBUG_COLOR + ">" + typeName + " - name=" + chatMessage.getName() + "</col>");
 	}
 
-	private boolean looksLikeUppercaseWasTitleCased(String message)
+	private void sendDebugDecisionMessage(ChatMessage chatMessage, DetectionResult detection)
+	{
+		String typeName = chatMessage.getType() == null ? "UNKNOWN" : chatMessage.getType().name();
+		long now = System.nanoTime();
+		if (typeName.equals(lastDebugType) && (now - lastDebugMessageNanos) < DEBUG_MESSAGE_INTERVAL_NANOS)
+		{
+			return;
+		}
+
+		lastDebugType = typeName;
+		lastDebugMessageNanos = now;
+		sendGameMessage("UCT Debug - " + "<col=" + DEBUG_COLOR + ">" + chatMessage.getName() + " - " + detection.reason + "</col>");
+	}
+
+	private static final class DetectionResult
+	{
+		final boolean shouldTransform;
+		final String reason;
+
+		DetectionResult(boolean shouldTransform, String reason)
+		{
+			this.shouldTransform = shouldTransform;
+			this.reason = reason;
+		}
+	}
+
+	private DetectionResult looksLikeUppercaseWasTitleCased(String message)
 	{
 		if (message == null || message.isEmpty())
 		{
-			return false;
+			return new DetectionResult(false, "skip: empty");
 		}
 
 		int[] titleCaseWords = {0};
@@ -364,11 +394,16 @@ public class UpperCaseTransformerPlugin extends Plugin
 
 		if (alphabeticWords < MIN_WORDS_FOR_TRANSFORM)
 		{
-			return false;
+			return new DetectionResult(false, "skip: < " + MIN_WORDS_FOR_TRANSFORM + " words (" + alphabeticWords + ")");
 		}
 
-		// Trigger if there's at least one word we'll capitalize: any title-case (after first-word rule) or all-caps
-		return (titleCaseWords[0] + allCapsWords[0]) >= 1;
+		int total = titleCaseWords[0] + allCapsWords[0];
+		if (total < 1)
+		{
+			return new DetectionResult(false, "skip: no title-case or all-caps words (" + alphabeticWords + " words)");
+		}
+
+		return new DetectionResult(true, "transform: " + titleCaseWords[0] + " title-case, " + allCapsWords[0] + " all-caps (" + alphabeticWords + " words)");
 	}
 
 	private static void applyWordCounts(boolean isTitleCase, boolean isAllCaps, int alphabeticWordsSoFar,
