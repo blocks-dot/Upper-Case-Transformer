@@ -83,7 +83,9 @@ public class UpperCaseTransformerPlugin extends Plugin
 			return;
 		}
 
-		String transformed = upperCaseTitleCaseWordsOutsideTagsIfChanged(message);
+		String transformed = detection.singleWord
+			? upperCaseSingleWordOutsideTags(message)
+			: upperCaseTitleCaseWordsOutsideTagsIfChanged(message);
 		if (transformed == null)
 		{
 			return;
@@ -164,7 +166,18 @@ public class UpperCaseTransformerPlugin extends Plugin
 			return;
 		}
 
-		WorldView worldView = client.getTopLevelWorldView();
+		// Use the local player's WorldView when available so we find players in the same instance
+		// (e.g. on a ship). Otherwise the sender is not in getTopLevelWorldView() and overhead is never set.
+		WorldView worldView = null;
+		Player localPlayer = client.getLocalPlayer();
+		if (localPlayer != null && localPlayer.getWorldView() != null)
+		{
+			worldView = localPlayer.getWorldView();
+		}
+		if (worldView == null)
+		{
+			worldView = client.getTopLevelWorldView();
+		}
 		if (worldView == null)
 		{
 			return;
@@ -274,11 +287,14 @@ public class UpperCaseTransformerPlugin extends Plugin
 	{
 		final boolean shouldTransform;
 		final String reason;
+		/** True when the message is a single word and should be fully uppercased. */
+		final boolean singleWord;
 
-		DetectionResult(boolean shouldTransform, String reason)
+		DetectionResult(boolean shouldTransform, String reason, boolean singleWord)
 		{
 			this.shouldTransform = shouldTransform;
 			this.reason = reason;
+			this.singleWord = singleWord;
 		}
 	}
 
@@ -286,7 +302,7 @@ public class UpperCaseTransformerPlugin extends Plugin
 	{
 		if (message == null || message.isEmpty())
 		{
-			return new DetectionResult(false, "skip: empty");
+			return new DetectionResult(false, "skip: empty", false);
 		}
 
 		int[] titleCaseWords = {0};
@@ -394,16 +410,20 @@ public class UpperCaseTransformerPlugin extends Plugin
 
 		if (alphabeticWords < MIN_WORDS_FOR_TRANSFORM)
 		{
-			return new DetectionResult(false, "skip: < " + MIN_WORDS_FOR_TRANSFORM + " words (" + alphabeticWords + ")");
+			if (alphabeticWords == 1 && config.capitalizeSingleWord())
+			{
+				return new DetectionResult(true, "transform: single word (1 word)", true);
+			}
+			return new DetectionResult(false, "skip: < " + MIN_WORDS_FOR_TRANSFORM + " words (" + alphabeticWords + ")", false);
 		}
 
 		int total = titleCaseWords[0] + allCapsWords[0];
 		if (total < 1)
 		{
-			return new DetectionResult(false, "skip: no title-case or all-caps words (" + alphabeticWords + " words)");
+			return new DetectionResult(false, "skip: no title-case or all-caps words (" + alphabeticWords + " words)", false);
 		}
 
-		return new DetectionResult(true, "transform: " + titleCaseWords[0] + " title-case, " + allCapsWords[0] + " all-caps (" + alphabeticWords + " words)");
+		return new DetectionResult(true, "transform: " + titleCaseWords[0] + " title-case, " + allCapsWords[0] + " all-caps (" + alphabeticWords + " words)", false);
 	}
 
 	private static void applyWordCounts(boolean isTitleCase, boolean isAllCaps, int alphabeticWordsSoFar,
@@ -436,6 +456,61 @@ public class UpperCaseTransformerPlugin extends Plugin
 		{
 			allCapsWords[0]++;
 		}
+	}
+
+	/**
+	 * Uppercases the first (and only) alphabetic word, ignoring tag contents.
+	 * Used when "Capitalize single-word messages" is enabled.
+	 * @return the string with the first word uppercased, or null if no change
+	 */
+	private String upperCaseSingleWordOutsideTags(String input)
+	{
+		if (input == null || input.isEmpty())
+		{
+			return null;
+		}
+		StringBuilder out = new StringBuilder(input);
+		boolean inTag = false;
+		int i = 0;
+		while (i < out.length())
+		{
+			char ch = out.charAt(i);
+			if (ch == '<')
+			{
+				inTag = true;
+				i++;
+				continue;
+			}
+			if (ch == '>')
+			{
+				inTag = false;
+				i++;
+				continue;
+			}
+			if (inTag || !Character.isLetter(ch))
+			{
+				i++;
+				continue;
+			}
+			int start = i;
+			while (i < out.length() && Character.isLetter(out.charAt(i)))
+			{
+				i++;
+			}
+			boolean changed = false;
+			for (int j = start; j < i; j++)
+			{
+				char current = out.charAt(j);
+				char upper = Character.toUpperCase(current);
+				if (upper != current)
+				{
+					out.setCharAt(j, upper);
+					changed = true;
+				}
+			}
+			return changed ? out.toString() : null;
+		}
+		return null;
 	}
 
 	private String upperCaseTitleCaseWordsOutsideTagsIfChanged(String input)

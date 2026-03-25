@@ -46,4 +46,14 @@ public interface UpperCaseTransformerConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "capitalizeSingleWord",
+		name = "Capitalize single-word messages",
+		description = "When enabled, single-word messages are shown in full uppercase (e.g. 'hello' → 'HELLO')"
+	)
+	default boolean capitalizeSingleWord()
+	{
+		return false;
+	}
 }
